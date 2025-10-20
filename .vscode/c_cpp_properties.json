@@ -1,0 +1,27 @@
+{
+    "configurations": [
+        {
+            "name": "ARM-GCC",
+            "compilerPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.3 rel1/bin/arm-none-eabi-gcc.exe",
+            "includePath": [ 
+             "${workspaceFolder}/**",
+             "${workspaceFolder}/Inc",
+             "${workspaceFolder}/Chip_headers/CMSIS/Include", 
+             "${workspaceFolder}/Chip_headers/CMSIS/Device/ST/STM32F4xx/Include"
+            ],
+            "defines": [
+                "STM32F407xx"
+            ],
+            "cStandard": "gnu11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/**" // This single line covers everything
+                ],
+                "limitSymbolsToIncludedHeaders": false // Keep this false for full search
+            }
+        }
+    ],
+    "version": 4
+}
