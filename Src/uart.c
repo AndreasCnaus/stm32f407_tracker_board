@@ -33,6 +33,12 @@ int uart1_init(void)
     // Enable clock access to GPIOB
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
 
+    // Set (TX) to Push-Pull for clean signal edges
+    GPIO_SetOutType(GPIOB, pb6, PUSH_PULL); 
+    
+    // Set (RX) to use the internal Pull-Up resistor (CRITICAL for idle stability)
+    GPIO_SetPuPd(GPIOB, pb7, PULL_UP);
+
     // Set the mode of PB6/PB7 (USART1_TX/_RX) to alternate function mode
     GPIO_SetMode(GPIOB, pb6, GPIO_MODE_ALTERNATE);
     GPIO_SetMode(GPIOB, pb7, GPIO_MODE_ALTERNATE);
@@ -68,6 +74,12 @@ int uart2_init(void)
 
     // Enable clock access to GPIOA
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+
+    // Set (TX) to Push-Pull for clean signal edges
+    GPIO_SetOutType(GPIOA, pa2, PUSH_PULL); 
+    
+    // Set (RX) to use the internal Pull-Up resistor (CRITICAL for idle stability)
+    GPIO_SetPuPd(GPIOA, pa3, PULL_UP);
 
     // Set the mode of PA2/PA3 (USART2_TX/_RX) to alternate function mode
     GPIO_SetMode(GPIOA, pa2, GPIO_MODE_ALTERNATE);
@@ -121,6 +133,15 @@ int uart1_read_nb(void)
     }
 }
 
+// Flushes the UART1 RX Buffer by reading all available data
+void uart1_flush_rx_buffer(void) {
+
+    // Loop as long as the RXNE flag is set 
+    while((USART1->SR & USART_SR_RXNE) != 0) {
+      (void)USART1->DR; // read register data into dummy variable 
+    }
+}
+
 __attribute__((used))   // don't optimize this function away
 int uart2_write(int ch)
 {
@@ -155,93 +176,6 @@ static void uart_set_baudrate(USART_TypeDef *USARTx, uint32_t periph_clk, uint32
     USARTx->BRR = compute_uart_bd(periph_clk, baudrate);
 }
 
-// Non-Blocking UART string write with timeout
-int uart_write_str_nb(uart_tx_char_t tx_func_nb, const char *str, size_t max_len, uint32_t timeout_ms)
-{
-    int chars_written = 0;
-    
-    // Save the start time 
-    uint32_t start_time = system_get_tick_ms();
-
-    for (const char *ptr = str; *ptr != '\0' && chars_written < max_len; ptr++) {
-        
-        int status = -1;
-
-        // Try to send current character 
-        while (status != 0) {
-            
-            status = tx_func_nb(*ptr); // Call the non-blocking write (returns 0 or -1)
-            
-            if (status == 0) {
-                chars_written++;
-                break; // Character sent successfully
-            }
-            
-            // Check if timeout time is exceeded (Overall Timeout Check)
-            if ((system_get_tick_ms() - start_time) >= timeout_ms) {
-                return -1; // Abort transmission
-            }
-        }
-    }
-    
-    return chars_written;
-}
-
-// Non-Blocking UART single line string read with timeout 
-char* uart_read_str_nb(uart_rx_char_t rx_func_nb, char *out_str, size_t max_len, uint32_t timeout_ms)
-{
-    // Input parameter check
-    if (out_str == NULL || max_len == 0) {
-        return NULL;
-    }
-
-    // Ensure space for at least the null terminator
-    if (max_len == 1) {
-        out_str[0] = '\0';
-        return NULL;
-    }
-
-    size_t i = 0;
-    int received_char;
-    uint32_t start_time = system_get_tick_ms();
-
-    // Loop as long as the total elapsed time is less than the timeout
-    while ((system_get_tick_ms() - start_time) < timeout_ms) {
-
-        // Call the non-blocking read (return character (0-255) or -1 fo no data)
-        received_char = rx_func_nb();
-        if (received_char >= 0) {   // Data received successfully
-
-            // Check againts output buffer limit
-            if (i < (max_len - 1)) { // -1 because of null terminator 
-
-                out_str[i] = (char)received_char;
-
-                // Check for a termination sequence (newline '\n' from the modem)
-                if (out_str[i] == '\n') {
-                    i++;    // increment to include '\n' in the count
-                    break; // exit the loop
-                }
-
-                i++; // increment once per stored character
-
-            } else {
-                // Buffer capacity reched (overflow prevented)
-                break;
-            }
-        }
-    }
-
-    // Terminate the buffer at the current index
-    out_str[i] = '\0';
-
-    // Check for read failure
-    if ((i == 0) && ((system_get_tick_ms() - start_time) >= timeout_ms)) {
-        return NULL;
-    }
-
-    return out_str; // return the result pointer 
-}
 
 
 

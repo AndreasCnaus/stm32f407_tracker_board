@@ -4,6 +4,8 @@
         "uart.h": "c",
         "string_utils.h": "c",
         "sim7600e.h": "c",
-        "gpio.h": "c"
+        "gpio.h": "c",
+        "condition_variable": "c",
+        "future": "c"
     }
 }
