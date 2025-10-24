@@ -23,8 +23,10 @@ const AtLookupEntry_t StatusLookupTable[] = {
     {"+CME ERROR:",         AT_CME_ERROR},
     {"+CMS ERROR:",         AT_CMS_ERROR},
 
-    // CREG (Network Registration)
+    // CREG (Network Registration: Circuit Switched (CS) Group)
     {"+CREG: ",             AT_INFO_CREG},          // Matches +CREG: <n>,<stat>
+    // CGATT (Network Registration: Packet Switched (PS) Group)
+    {"+CGATT: ",            AT_INFO_CGATT},
 
     // CGPS
     {"+CGPS: ",             AT_INFO_CGPS},          // Matches +CGPS: <on/off>,<mode>
@@ -49,17 +51,40 @@ const AtLookupEntry_t StatusLookupTable[] = {
     {NULL,                   (AtResponseStatus_t)0} 
 };
 
+// Corresponds to the order of CsqRssiState_t enum (0, 1, 2, 3, 4, 5)
+const char * const RSSI_STATE_STRINGS[] = {
+    "EXCELLENT (>= -77 dBm)",
+    "GOOD (-97 dBm to -79 dBm)",
+    "MARGINAL (-111 dBm to -99 dBm)",
+    "MINIMAL (<= -113 dBm)",
+    "UNKNOWN (99)",
+    "INVALID_PARSE_ERROR"
+};
+
+// Corresponds to the order of CsqBerState_t enum (0, 1, 2, 3, 4, 5)
+const char * const BER_STATE_STRINGS[] = {
+    "EXCELLENT (0)",
+    "GOOD (1-2)",
+    "ACCEPTABLE (3-4)",
+    "POOR (5-7)",
+    "UNKNOWN_LTE_NA (99)",
+    "INVALID_PARSE_ERROR"
+};
 
 // Function Pointer Type definitions
 typedef int (*uart_tx_char_t)(int ch);
 typedef int (*uart_rx_char_t)(void);
 
 // Forward declarations
+AtResponseStatus_t send_at(const char *cmd, uint32_t rx_timeout_ms, char *rx_buf, size_t rx_buf_size, uint8_t debug);
 AtResponseStatus_t parse_at_response(const char *response, uint8_t debug);
 int sim7600e_write_command(uart_tx_char_t tx_func_nb, const char *cmd, size_t len, uint32_t timeout_ms);
 char* sim7600e_read_full_response(uart_rx_char_t rx_func_nb, char *out_buf, size_t max_len, uint32_t timeout_ms);
 CregState_t parse_creg_status(const char *response_str);
 CgpsState_t parse_cgps_status(const char *response_str);
+CsqState_t parse_csq_status(const char *response_str, CsqResult_t *result);
+int sim7600e_eval_sq_result(CsqResult_t *result, uint8_t debug);
+CgattState_t parse_cgatt_status(const char *response_str);
 
 // Parse single AT-Response line using lookup table
 AtResponseStatus_t parse_at_response(const char *response, uint8_t debug)
@@ -190,6 +215,7 @@ AtResponseStatus_t send_at(const char *cmd, uint32_t rx_timeout_ms, char *rx_buf
     // Send Command with dedicated, short TX timeout
     size_t bytes_to_send = strlen(cmd);
     int bytes_send = sim7600e_write_command((uart_tx_char_t)uart1_write_nb, cmd, bytes_to_send, TX_TIMEOUT_MS);
+
     if (bytes_send < 0) {
         if (debug) printf("Error: UART write timed out during TX.\r\n");
         return AT_TIMEOUT;
@@ -211,7 +237,7 @@ AtResponseStatus_t send_at(const char *cmd, uint32_t rx_timeout_ms, char *rx_buf
     return AT_TIMEOUT;
 }
 
-// Parse Network Registration Status
+// Parse Network Registration Status response 
 CregState_t parse_creg_status(const char *response_str) {
 
     // Check input parameter 
@@ -226,7 +252,6 @@ CregState_t parse_creg_status(const char *response_str) {
     }
 
     // Advance the pointer past the "+CREG: " prefix to the numbers
-    // start_pos will now point to the first digit of <n>.
     start_pos += strlen("+CREG: ");
 
     // Attempt to read the two required integers <n>,<stat>
@@ -260,7 +285,7 @@ CregState_t parse_creg_status(const char *response_str) {
     }
 }
 
-// Parse GPS Status 
+// Parse GPS Status response 
 CgpsState_t parse_cgps_status(const char *response_str)
 {
     if (response_str == NULL) {
@@ -269,6 +294,7 @@ CgpsState_t parse_cgps_status(const char *response_str)
 
     // Handle +CGPS: (GPS Engine Status)
     const char *start_pos = strstr(response_str, "+CGPS: ");
+
     if (start_pos != NULL) {
         start_pos += strlen("+CGPS: ");
         
@@ -300,6 +326,7 @@ CgpsState_t parse_cgps_status(const char *response_str)
     // Handle +CGPSINFO: (Positional Fix Status)
     const char *info_prefix = "+CGPSINFO: ";
     start_pos = strstr(response_str, info_prefix);
+
     if (start_pos != NULL) {
         
         // Find the "no fix" pattern first: +CGPSINFO: ,,,,,,,,
@@ -319,6 +346,177 @@ CgpsState_t parse_cgps_status(const char *response_str)
     
     // The response string contained neither +CGPS: nor +CGPSINFO:
     return CGPS_STATE_INVALID;
+}
+
+// Parse Signal Quality response
+CsqState_t parse_csq_status(const char *response_str, CsqResult_t *result)
+{
+    const char *info_prefix = "+CSQ: ";
+    int raw_rssi = -1;
+    int raw_ber = -1;
+    
+    // Check input parameters
+    if (response_str == NULL || result == NULL) {
+        return CSQ_STATE_INVALID;
+    }
+
+    // Locate the specific information line
+    const char *start_pos = strstr(response_str, info_prefix);
+    if (start_pos == NULL) {
+        return CSQ_STATE_INVALID;
+    }
+
+    // Advance the pointer past the "+CSQ: " prefix
+    start_pos += strlen(info_prefix);
+
+    // Attempt to read the two required integers (RSSI and BER)
+    int scan_count = sscanf(start_pos, "%d,%d", &raw_rssi, &raw_ber);
+    if (scan_count != 2) {
+        return CSQ_STATE_INVALID;
+    }
+    
+    // Store raw values in the result structure for debugging/logging
+    result->raw_rssi = raw_rssi;
+    result->raw_ber = raw_ber;
+
+    // Map RSSI to the appropriate status
+    if (raw_rssi >= 20 && raw_rssi <= 31) {
+        result->rssi_state = RSSI_STATE_EXCELLENT;
+    }
+    else if (raw_rssi >= 10 && raw_rssi <= 19) {
+        result->rssi_state = RSSI_STATE_GOOD;
+    }
+    else if (raw_rssi >= 2 && raw_rssi <= 9) {
+        result->rssi_state = RSSI_STATE_MARGINAL;
+    }
+    else if (raw_rssi >= 0 && raw_rssi <= 1) {
+        result->rssi_state = RSSI_STATE_MINIMAL;
+    }
+    else if (raw_rssi == 99) {
+        result->rssi_state = RSSI_STATE_UNKNOWN;
+    }
+    else {
+        result->rssi_state = RSSI_STATE_INVALID;
+    }
+
+    // 5. Map BER to the appropriate status (using correct logic)
+    if (raw_ber == 0) {
+        result->ber_state = BER_STATE_EXCELLENT;
+    }
+    else if (raw_ber >= 1 && raw_ber <= 2) {
+        result->ber_state = BER_STATE_GOOD;
+    }
+    else if (raw_ber >= 3 && raw_ber <= 4) { // Corrected: 3 and 4
+        result->ber_state = BER_STATE_ACCEPTABLE;
+    }
+    else if (raw_ber >= 5 && raw_ber <= 7) { // Corrected: 5, 6, 7
+        result->ber_state = BER_STATE_POOR;
+    }
+    else if (raw_ber == 99) {
+        result->ber_state = BER_STATE_UNKNOWN;
+    }
+    else {
+        result->ber_state = BER_STATE_INVALID;
+    }
+
+    return CSQ_STATE_OK;
+}
+
+// Evaluate Sqignal Quality results 
+int sim7600e_eval_sq_result(CsqResult_t *result, uint8_t debug)
+{
+    int rv = 0;
+
+    // Input parameter check 
+    if (result == NULL) {
+        if (debug) printf ("Error: Signal Quality result is null.\r\n");
+        return --rv;
+    }
+
+    // Evaluate RSSI (Signal Strength)
+    switch (result->rssi_state) {
+        case RSSI_STATE_EXCELLENT:
+        case RSSI_STATE_GOOD: {
+            if (debug) printf("Signal Report: RSSI is %s. (Raw: %d).\r\n", 
+                             RSSI_STATE_STRINGS[result->rssi_state], result->raw_rssi);
+        
+        } break;
+        case RSSI_STATE_UNKNOWN: {
+             if (debug) printf("Error: RSSI is %s (Raw: %d). Cannot establish connection yet. Stopping.\r\n", 
+                             RSSI_STATE_STRINGS[result->rssi_state], result->raw_rssi);
+            return --rv;
+        }
+        case RSSI_STATE_MARGINAL:
+        case RSSI_STATE_MINIMAL:
+        case RSSI_STATE_INVALID:
+        default: {
+             if (debug) printf("Error: RSSI is %s (Raw: %d). Signal too weak/invalid. Stopping.\r\n", 
+                             RSSI_STATE_STRINGS[result->rssi_state], result->raw_rssi);
+            return --rv;
+        }
+    }
+
+    // Evaluate BER (Bit Error Rate)
+    switch (result->ber_state) {
+        case BER_STATE_EXCELLENT:
+        case BER_STATE_GOOD:
+        case BER_STATE_ACCEPTABLE: {
+            if (debug) printf("Signal Report: BER is %s. (Raw: %d). Quality is OK.\r\n",
+                             BER_STATE_STRINGS[result->ber_state], result->raw_ber);
+        } break;
+        case BER_STATE_UNKNOWN: {
+            // BER 99 is common/acceptable on LTE if RSSI is already determined to be good/excellent.
+            if (debug) printf("Signal Report: BER is %s (Raw: %d). Accepted due to strong RSSI.\r\n", 
+                                BER_STATE_STRINGS[result->ber_state], result->raw_ber);
+        } break;
+        case BER_STATE_POOR:
+        case BER_STATE_INVALID:
+        default: {
+            if (debug) printf("Error: BER is %s (Raw: %d). Poor quality/invalid value. Stopping.\r\n", 
+                             BER_STATE_STRINGS[result->ber_state], result->raw_ber);
+            return --rv;
+        }
+    }
+
+    if (debug) printf("Signal quality check PASSED. Proceeding...\r\n");
+    return 0; // Success
+}
+
+// Parse Network attachment status 
+CgattState_t parse_cgatt_status(const char *response_str)
+{
+    // Input parameter check 
+    if (response_str == NULL) {
+        return CGATT_STATE_INVALID;
+    }
+
+    const char *info_prefix = "+CGATT: ";
+    int state = -1;
+
+    // Locate the specific information line
+    const char *start_pos = strstr(response_str, info_prefix);
+    if (start_pos == NULL) {
+        return CGATT_STATE_INVALID;
+    }
+
+    // Advance the pointer past the "+CGATT: " prefix
+    start_pos += strlen(info_prefix);
+
+    // Attempt to read the two required integers <state>
+    int scan_count = sscanf(start_pos, "%d", &state);
+    if (scan_count != 1) {
+        return CGATT_STATE_INVALID;
+    }
+
+    // Map <state> to the enum 
+    if (state == 0) {
+        return CGATT_STATE_DETACHED;
+    } else if (state == 1) {
+        return CGATT_STATE_ATTACHED;
+    } else {
+        // Handle unexpected values
+        return CGATT_STATE_INVALID; 
+    }
 }
 
 int sim7600e_init(const char *pin, const char *url, uint8_t debug)
@@ -352,6 +550,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
 
     // Unlock SIM if necessary
     resp = send_at("AT+CPIN?\r", 1000, rx_buf, RX_BUF_SIZE, debug);  // Query SIM-Lock status 
+
     if (resp == AT_CPIN_READY) {
         if (debug) printf("SIM already unlocked.\r\n");
     } else if (resp == AT_CPIN_SIM_PIN) {
@@ -373,7 +572,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     systick_delay_ms(5000);    // Wait 5 seconds to stabilize 
     uart1_flush_rx_buffer();    // Flush the UART1 RX-Buffer (erase the unsolicited status codes)
 
-    // Register SIM on the Network
+    // Register SIM on the Network: CS Domain
     const uint8_t registration_attempts = 10;
     uint8_t sim_registered = 0;
 
@@ -388,6 +587,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
         // Adaptive Timeout: Use 5s for the first attempt (i=0), 1s thereafter.
         uint32_t current_timeout_ms = (i == 0) ? INITIAL_CREG_TIMEOUT : POLLING_CREG_TIMEOUT;
 
+        // Check modem's attachment to the Voice and Network domain 
         resp = send_at("AT+CREG?\r", current_timeout_ms, rx_buf, RX_BUF_SIZE, debug);
         if (resp == AT_INFO_CREG) {
             CregState_t state = parse_creg_status(rx_buf);
@@ -427,21 +627,79 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     }
     systick_delay_ms(1000);     // Wait 1 second
 
-    // Query Signal Quality Information: RSSI and BER 
-    resp = send_at("AT+CSQ\r", 500, rx_buf, RX_BUF_SIZE, debug);
-    if (resp == AT_INFO_CSQ) {
-        // ToDo: parse the csq 
+    // Query Signal Quality Information: RSSI and BER
+    resp = send_at("AT+CSQ\r", 1000, rx_buf, RX_BUF_SIZE, debug);
 
-    } else {    // Handle all other codes (AT_TIMEOUT, AT_ERROR, etc.)
-        if (debug) printf("Failed to query Signal Quality information,. Status code: %d.\r\n", resp);
+    if (resp == AT_INFO_CSQ) {
+        CsqResult_t sq_result;
+        
+        // Parse the response
+        CsqState_t state = parse_csq_status(rx_buf, &sq_result);
+
+        if (state == CSQ_STATE_OK) {
+            // Evaluate the parsed result
+            if (sim7600e_eval_sq_result(&sq_result, debug) != 0) {
+                // Evaluation failed (e.g., RSSI is Marginal or Unknown)
+                if (debug) printf("Signal quality evaluation failed. Aborting initialization.\r\n");
+                return --rv;
+            }
+            // Signal quality passed evaluation. Continue initialization.
+            
+        } else {
+            // Critical: Failed to parse the +CSQ: line structure
+            if (debug) printf("Failed to parse Signal Quality result from response: %s\r\n", rx_buf); 
+            return --rv; // Abort on parsing failure
+        }
+    } else { 
+        // Handle all other codes (AT_TIMEOUT, AT_ERROR, etc.)
+        if (debug) printf("Failed to query Signal Quality information. Status code: %d.\r\n", resp);
+        return --rv; // Abort on command execution failure
+    }
+    systick_delay_ms(1000);     // Wait 1 second
+
+    // Initialize HTTP (Data Attached: PS Domain)
+    resp = send_at("AT+CGATT?\r", 1000, rx_buf, RX_BUF_SIZE, debug);
+
+    if (resp == AT_INFO_CGATT) {
+        CgattState_t state = parse_cgatt_status(rx_buf);
+        
+        if (state == CGATT_STATE_ATTACHED) {
+            if (debug) printf("Data Network (PS Domain) is already attached. Proceeding.\r\n");
+        
+        } else if (state == CGATT_STATE_DETACHED) {
+            if (debug) printf("Data Network (PS Domain) is detached. Attempting to attach...\r\n");
+
+            // Attempting to attach to PS Domain. Using 5s timeout as attachment may take time.
+            resp = send_at("AT+CGATT=1\r", 5000, rx_buf, RX_BUF_SIZE, debug);
+            
+            if (resp == AT_OK) {
+                if (debug) printf("Data Network attached successfully (AT+CGATT=1). \r\n");
+            } else {
+                if (debug) printf("Failed to attach to PS Domain (AT+CGATT=1). Status code: %d.\r\n", resp);
+                return --rv;
+            }
+
+        } else {
+            // Handle parsing failure or an unknown state value
+            if (debug) printf("Failed to parse CGATT status or received invalid state. Status code from Query: %d.\r\n", resp);
+            return --rv;
+        }
+
+    } else {
+        // Handle failures of the initial query (AT_TIMEOUT, AT_ERROR, etc.)
+        if (debug) printf("Failed to query Data Network attachment status. Status code: %d.\r\n", resp);
         return --rv;
     }
     systick_delay_ms(1000);     // Wait 1 second
-    
+
+    // ToDo: PDP Context: AT+CGACT / AT+SAPBR (depending on the modem)3
+
     // Initialize GPS module 
     resp = send_at("AT+CGPS?\r", 500, rx_buf, RX_BUF_SIZE, debug); // Query GPS engine status
+
     if (resp == AT_INFO_CGPS) {
         CgpsState_t state = parse_cgps_status(rx_buf);
+
         if (state == CGPS_STATE_OFF) {
             if (debug) printf("GPS is OFF, trying to enable...\r\n");
             resp = send_at("AT+CGPS=1\r", 500, rx_buf, RX_BUF_SIZE, debug);
@@ -461,10 +719,6 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
         printf("Failed to query GPS engine status. Status Code: %d.\r\n", resp);
         return --rv;
     }
-    systick_delay_ms(1000);     // Wait 1 second
-
-    // ToDo: init http engine 
 
     return rv;   // 0 on success 
 }
-

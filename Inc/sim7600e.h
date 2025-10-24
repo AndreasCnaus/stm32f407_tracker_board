@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-
 typedef enum {
     // ----------------------------------------------------------------------
     // 0x00 - 0x0F: Final Result Codes (Standard AT V.250 & 3GPP)
@@ -74,26 +73,63 @@ typedef enum {
     CREG_STATE_UNKNOWN = 4,        // Unknown (e.g., out of coverage area)
     CREG_STATE_ROAMING = 5,        // Registered, roaming
     
-    // --- Additional Status Codes for Parsing Logic ---
+    // Additional Status Codes for Parsing Logic
     CREG_STATE_INVALID = 6        // Parsing failed (e.g., string format unexpected)
 } CregState_t;
 
 typedef enum {
-    // --- Configuration States (Derived from AT+CGPS?) ---
+    // Configuration States (Derived from AT+CGPS?)
     CGPS_STATE_OFF = 0,               // +CGPS: 0 (GPS engine is powered down)
     CGPS_STATE_ON_STANDALONE = 1,     // +CGPS: 1,1 (GPS is ON, Standalone mode)
     CGPS_STATE_ON_AGPS_UE = 2,        // +CGPS: 1,2 (GPS is ON, UE-based A-GPS mode)
     CGPS_STATE_ON_AGPS_ASSIST = 3,    // +CGPS: 1,3 (GPS is ON, UE-assisted A-GPS mode)
 
-    // --- Positional Fix States (Derived from AT+CGPSINFO) ---
+    // Positional Fix States (Derived from AT+CGPSINFO)
     CGPS_STATE_NO_FIX = 4,            // +CGPSINFO: ,,,,,,,, (GPS is ON but has not acquired a fix yet)
     CGPS_STATE_FIX_AVAILABLE = 5,     // +CGPSINFO: <data> (GPS is ON and has a valid coordinate fix)
     
-    // --- Additional Status Codes for Parsing Logic ---
+    // Additional Status Codes for Parsing Logic
     CGPS_STATE_INVALID = 6            // Parsing failed or unexpected modem state
 } CgpsState_t;
 
-AtResponseStatus_t send_at(const char *cmd, uint32_t rx_timeout_ms, char *rx_buf, size_t rx_buf_size, uint8_t debug);
+typedef enum {
+    CSQ_STATE_OK = 0,
+    CSQ_STATE_INVALID = 1
+} CsqState_t;
+
+typedef enum {
+    // Signal Strength Quality Mapping (RSSI)
+    RSSI_STATE_EXCELLENT = 0,    // RSSI 20-31 (Very strong signal: > -77 dBm)
+    RSSI_STATE_GOOD = 1,         // RSSI 10-19 (Reliable signal: -97 dBm to -79 dBm)
+    RSSI_STATE_MARGINAL = 2,     // RSSI 2-9 (Weak, unstable signal: -111 dBm to -99 dBm)
+    RSSI_STATE_MINIMAL = 3,      // RSSI 0-1 (Lowest possible signal: <= -113 dBm)
+    RSSI_STATE_UNKNOWN = 4,      // RSSI 99 (Not detectable, network not found, or modem is busy)
+    RSSI_STATE_INVALID = 5       // Parsing failed or value out of standard range
+} CsqRssiState_t;
+
+typedef enum {
+    // Bit Error Rate Quality Mapping (BER)
+    BER_STATE_EXCELLENT = 0,     // BER 0 (Best quality)
+    BER_STATE_GOOD = 1,          // BER 1-2 (Good quality, low errors)
+    BER_STATE_ACCEPTABLE = 2,    // BER 3-4 (Moderate errors)
+    BER_STATE_POOR = 3,          // BER 5-7 (High errors, poor quality)
+    BER_STATE_UNKNOWN = 4,       // BER 99 (Not known, not detectable, or not applicable - common for LTE)
+    BER_STATE_INVALID = 5        // Parsing failed or value out of standard range
+} CsqBerState_t;
+
+typedef struct {
+    int raw_rssi;
+    int raw_ber;
+    CsqRssiState_t rssi_state;
+    CsqBerState_t ber_state;
+} CsqResult_t;
+
+typedef enum {
+    CGATT_STATE_DETACHED = 0,
+    CGATT_STATE_ATTACHED = 1,
+    CGATT_STATE_INVALID = 2
+} CgattState_t;
+
 int sim7600e_init(const char *pin, const char *url, uint8_t debug);
 
 #endif  // SIM7600E_H_
