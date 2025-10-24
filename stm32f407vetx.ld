@@ -70,19 +70,62 @@ SECTIONS
         __heap_end__ = .;
     } > SRAM
 
-    /* Stack section (starts at top of SRAM and grows downwards) */
+    /* Stack section outside region (no overlap in accounting) */
     .stack (NOLOAD) : {
-        . = ORIGIN(SRAM) + LENGTH(SRAM) - __max_stack_size;
-        . = ALIGN(8);
-        __stack_start__ = .;
-        . = . + __max_stack_size;
-        . = ALIGN(8);
-        __stack_end__ = .;
-    } > SRAM
+        __stack_end__ = ORIGIN(SRAM) + LENGTH(SRAM);
+        __stack_start__ = __stack_end__ - __max_stack_size;
+    } > NONE
 }
 
 /* Define the symbols for C code */
 PROVIDE(_estack = ORIGIN(SRAM) + LENGTH(SRAM));
+
+
+/*
+ Address ↑  (higher addresses)
+───────────────────────────────────────────────────────────────
+0x20020000  <-- __stack_end__ / _estack
+               (Top of SRAM / Initial SP value)
+               • Stack pointer starts here at reset
+               • Stack grows downward (uninitialized)
+
+      ↓ Stack (Runtime)
+      ↓ Used for: function calls, local variables, interrupt frames
+      ↓ Uninitialized, volatile at runtime
+
+0x2001C000  <-- __stack_start__ = __stack_end__ - 16 KB
+               • Reserved 16,384 bytes (16.0 KB) for stack
+
+───────────────────────────────────────────────────────────────
+      ↑ (Unused / Free space between heap and stack, if any)
+      ↑ This space depends on runtime memory usage
+
+      ↑ Heap grows upward (allocated at runtime via malloc/new)
+      ↑ Uninitialized (NOLOAD section)
+
+0x2001B000  <-- __heap_end__ ≈ 0x20001370 + 4,096 bytes
+0x20001370  <-- __heap_start__
+               • Reserved 4,096 bytes (4.0 KB)
+               • Used for dynamic allocations (malloc, etc.)
+
+───────────────────────────────────────────────────────────────
+0x20001370  <-- __bss_end__
+0x20000060  <-- __bss_start__
+               • Size: 5,104 bytes (≈4.98 KB)
+               • Contains *uninitialized global/static variables*
+               • Zero-filled at startup by the C runtime
+
+───────────────────────────────────────────────────────────────
+0x20000060  <-- _edata (end of .data)
+0x20000000  <-- _sdata (start of .data)
+               • Size: 96 bytes (0.094 KB)
+               • Contains *initialized global/static variables*
+               • Copied from Flash to SRAM during startup
+
+───────────────────────────────────────────────────────────────
+0x20000000  <-- ORIGIN(SRAM) = Start of SRAM (Total 128 KB = 131,072 bytes)
+
+*/
 
 
 
