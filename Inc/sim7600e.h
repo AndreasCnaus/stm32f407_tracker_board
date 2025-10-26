@@ -30,14 +30,13 @@ typedef enum {
     // 0x20 - 0x2F: Network Registration/Attachment Info (CREG/CGATT)
     // ----------------------------------------------------------------------
     AT_INFO_CREG = 0x20,        // GENERIC match for "+CREG: "
-    AT_INFO_CGATT = 0x21,       // GENERIC match for "+CGATT: " (Critical for data)
+    AT_INFO_CGATT = 0x21,       // GENERIC match for "+CGATT: "
 
     // ----------------------------------------------------------------------
-    // 0x30 - 0x3F: Protocol Statuses (HTTP/TCP/PDP Context)
+    // 0x30 - 0x3F: Protocol Statuses (HTTP/PDP Context)
     // ----------------------------------------------------------------------
     AT_HTTP_ACTION = 0x30,      // Matches "+HTTPACTION:"
-    AT_NETOPEN_SUCCESS = 0x31,  // Matches "+NETOPEN:"
-    AT_IP_ADDRESS = 0x32,       // Matches "+QIBASTCP:"
+    AT_INFO_CGPADDR = 0x31,     // Generic Match for CGPADDR: 
 
     // ----------------------------------------------------------------------
     // 0x40 - 0x4F: CGPS (Generic Info - Requires Detailed Parsing)
@@ -129,6 +128,12 @@ typedef enum {
     CGATT_STATE_ATTACHED = 1,
     CGATT_STATE_INVALID = 2
 } CgattState_t;
+
+typedef enum {
+    CGPADDR_STATE_OK = 0,
+    CGPADDR_STATE_NOT_ACTIVE = 1,
+    CGPADDR_STATE_INVALID = 2
+} CgpaddrState_t;
 
 int sim7600e_init(const char *pin, const char *url, uint8_t debug);
 

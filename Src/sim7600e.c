@@ -6,9 +6,11 @@
 #include <stdio.h>
 
 
-#define TX_TIMEOUT_MS   100 // TX timeout in miliseconds 
-#define TX_BUF_SIZE     32  // Size for the AT command reques
-#define RX_BUF_SIZE     64 // Size for the AT command response
+#define TX_TIMEOUT_MS       100 // TX timeout in miliseconds 
+#define TX_BUF_SIZE         32  // Size for the AT command reques
+#define RX_BUF_SIZE         64  // Size for the AT command response
+#define IPV6_ADDR_MAX_LEN   40  // For full IPv6 address string
+#define HTTP_URL_MAX_LEN    128 // For HTTP-URL strng  
 
 typedef struct {
     const char *string;
@@ -27,6 +29,8 @@ const AtLookupEntry_t StatusLookupTable[] = {
     {"+CREG: ",             AT_INFO_CREG},          // Matches +CREG: <n>,<stat>
     // CGATT (Network Registration: Packet Switched (PS) Group)
     {"+CGATT: ",            AT_INFO_CGATT},
+    // CGPADDR (IP Address confirmation)
+    {"+CGPADDR: ",          AT_INFO_CGPADDR},
 
     // CGPS
     {"+CGPS: ",             AT_INFO_CGPS},          // Matches +CGPS: <on/off>,<mode>
@@ -85,6 +89,7 @@ CgpsState_t parse_cgps_status(const char *response_str);
 CsqState_t parse_csq_status(const char *response_str, CsqResult_t *result);
 int sim7600e_eval_sq_result(CsqResult_t *result, uint8_t debug);
 CgattState_t parse_cgatt_status(const char *response_str);
+CgpaddrState_t parse_cgpaddr_status(const char *response_str, char *ip_addr);
 
 // Parse single AT-Response line using lookup table
 AtResponseStatus_t parse_at_response(const char *response, uint8_t debug)
@@ -519,6 +524,47 @@ CgattState_t parse_cgatt_status(const char *response_str)
     }
 }
 
+// Parse IP-Address confirmation 
+CgpaddrState_t parse_cgpaddr_status(const char *response_str, char *ip_addr)
+{
+    // Check input parameters for NULL
+    if (response_str == NULL || ip_addr == NULL) {
+        return CGPADDR_STATE_INVALID;
+    }
+
+    const char *info_prefix = "+CGPADDR: ";
+    int cid = -1;
+    
+    // Prevent garbage data if parsing fails
+    ip_addr[0] = '\0'; 
+
+    // Locate the specific information line
+    const char *start_pos = strstr(response_str, info_prefix);
+    if (start_pos == NULL) {
+        // Did not find the informational prefix.
+        return CGPADDR_STATE_INVALID;
+    }
+
+    // Advance the pointer past the "+CGPADDR: " prefix
+    start_pos += strlen(info_prefix);
+
+    // Extract the CID and IP-Address appropriately 
+    int scan_count = sscanf(start_pos, "%d,%[0-9.]", &cid, ip_addr);
+
+    // We must successfully read the CID and the IP string (2 items)
+    if (scan_count != 2) {
+        printf("Scan count error: %d\r\n", scan_count);
+        return CGPADDR_STATE_INVALID;
+    }
+
+    // Check if the extracted IP address string is empty ("")
+    if (ip_addr[0] == '\0') {
+        return CGPADDR_STATE_NOT_ACTIVE;
+    }
+
+    return CGPADDR_STATE_OK;    // success 
+}
+
 int sim7600e_init(const char *pin, const char *url, uint8_t debug)
 {
     char cmd[TX_BUF_SIZE];
@@ -529,7 +575,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     // Send the software reset command (timeout can be short, e.g., 500ms, as it only needs to process the command)
     resp = send_at("AT+CFUN=1,1\r", 500, rx_buf, RX_BUF_SIZE, debug);
     if (resp != AT_OK) {
-        if (debug) printf("Error: failed to trigger SIM7600E reset. Continuing with caution.\r\n");
+        if (debug) printf("[CFUN] Error: failed to trigger SIM7600E reset. Continuing with caution.\r\n");
         return --rv;
     }
 
@@ -543,7 +589,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     // Check the communication after reset 
     resp = send_at("AT\r", 500, rx_buf, RX_BUF_SIZE, debug);
     if (resp != AT_OK) {
-        if (debug) printf("Error: Initial communication attempt with SIM7600E failed.\r\n");
+        if (debug) printf("[AT] Error: Initial communication attempt with SIM7600E failed.\r\n");
         return --rv;
     }
     systick_delay_ms(1000); // Wait 1 second
@@ -558,15 +604,15 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
         snprintf(cmd, TX_BUF_SIZE, "AT+CPIN=\"%s\"\r", pin);        
         resp = send_at(cmd, 1000, rx_buf, RX_BUF_SIZE, debug);
         if (resp != AT_OK) {
-            if (debug) printf("Failed to unlock SIM\r\n");
+            if (debug) printf("[CPIN] Failed to unlock SIM\r\n");
             return --rv;
         }
     } else if (resp == AT_CPIN_SIM_PUK) {
-        if (debug) printf("Error: SIM is PUK-locked. Manual intervention required.\r\n");
+        if (debug) printf("[CPIN] Error: SIM is PUK-locked. Manual intervention required.\r\n");
         return --rv;
     } else {
         // Catch-all for NOT INSERTED, etc.
-        if (debug) printf("Error: CPIN response not supported or failure (Code: %d).\r\n", resp); 
+        if (debug) printf("[CPIN] Error: response not supported or failure (Code: %d).\r\n", resp); 
         return --rv; 
     }
     systick_delay_ms(5000);    // Wait 5 seconds to stabilize 
@@ -622,7 +668,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     }
 
     if (sim_registered == 0) {
-        if (debug) printf("Failed to register on network after %u attempts.\r\n", registration_attempts);
+        if (debug) printf("[CREG] Failed to register on network after %u attempts.\r\n", registration_attempts);
         return --rv;
     }
     systick_delay_ms(1000);     // Wait 1 second
@@ -647,17 +693,17 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
             
         } else {
             // Critical: Failed to parse the +CSQ: line structure
-            if (debug) printf("Failed to parse Signal Quality result from response: %s\r\n", rx_buf); 
+            if (debug) printf("[CSQ] Failed to parse Signal Quality result from response: %s\r\n", rx_buf); 
             return --rv; // Abort on parsing failure
         }
     } else { 
         // Handle all other codes (AT_TIMEOUT, AT_ERROR, etc.)
-        if (debug) printf("Failed to query Signal Quality information. Status code: %d.\r\n", resp);
+        if (debug) printf("[CSQ] Failed to query Signal Quality information. Status code: %d.\r\n", resp);
         return --rv; // Abort on command execution failure
     }
     systick_delay_ms(1000);     // Wait 1 second
 
-    // Initialize HTTP (Data Attached: PS Domain)
+    // -- Initialize HTTP (Data Attached: PS Domain) --
     resp = send_at("AT+CGATT?\r", 1000, rx_buf, RX_BUF_SIZE, debug);
 
     if (resp == AT_INFO_CGATT) {
@@ -675,26 +721,140 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
             if (resp == AT_OK) {
                 if (debug) printf("Data Network attached successfully (AT+CGATT=1). \r\n");
             } else {
-                if (debug) printf("Failed to attach to PS Domain (AT+CGATT=1). Status code: %d.\r\n", resp);
+                if (debug) printf("[CGATT] Failed to attach to PS Domain (AT+CGATT=1). Status code: %d.\r\n", resp);
                 return --rv;
             }
 
         } else {
             // Handle parsing failure or an unknown state value
-            if (debug) printf("Failed to parse CGATT status or received invalid state. Status code from Query: %d.\r\n", resp);
+            if (debug) printf("[CGATT] Failed to parse CGATT status or received invalid state. Status code from Query: %d.\r\n", resp);
             return --rv;
         }
 
     } else {
         // Handle failures of the initial query (AT_TIMEOUT, AT_ERROR, etc.)
-        if (debug) printf("Failed to query Data Network attachment status. Status code: %d.\r\n", resp);
+        if (debug) printf("[CGATT] Failed to query Data Network attachment status. Status code: %d.\r\n", resp);
         return --rv;
     }
     systick_delay_ms(1000);     // Wait 1 second
 
-    // ToDo: PDP Context: AT+CGACT / AT+SAPBR (depending on the modem)3
+    // -- Data Connection Setup --
+    // Delete the old context for data connection 
+    resp = send_at("AT+CGDCONT=1\r", 500, rx_buf, RX_BUF_SIZE, debug); 
+    
+    if (resp == AT_OK) {
+        if (debug) printf("PDP context 1 deleted successfully.\r\n");
+    } else {
+        // This can fail, as the context might not exist yet. 
+        if (debug) printf("[CGDCONT] Warning: Failed to delete context. Status code: %d. Proceeding...\r\n", resp);
+        // no error return 
+    }
 
-    // Initialize GPS module 
+    // Define new context for data connection: Context ID 1, IP protocol, APN 'internet'
+    const char *apn_cmd = "AT+CGDCONT=1,\"IP\",\"internet\"\r";
+    resp = send_at(apn_cmd, 500, rx_buf, RX_BUF_SIZE, debug); 
+    
+    if (resp == AT_OK) {
+        if (debug) printf("New context set: %s.\r\n", apn_cmd);
+    } else {
+        if (debug) printf("[CGDCONT] Failed to set context. Command: %s. Status: %d.\r\n", apn_cmd, resp);
+        return --rv;
+    }
+
+    // Activate the new context for data connection 
+    resp = send_at("AT+CGACT=1,1\r", 500, rx_buf, RX_BUF_SIZE, debug);
+    
+    if (resp == AT_OK) {
+        if (debug) printf("New Context was successfully activated.\r\n");
+    } else {
+        if (debug) printf("[CGACT] Failed to activate new context. Status code: %d.\r\n", resp);
+        return --rv;
+    }
+
+    // Confirm the assigned IP address
+    resp = send_at("AT+CGPADDR=1\r", 500, rx_buf, RX_BUF_SIZE, debug);
+
+    if (resp == AT_INFO_CGPADDR) {
+        // A valid info line was received. Now, check the content.
+        char ip_addr[IPV6_ADDR_MAX_LEN]; 
+        
+        CgpaddrState_t state = parse_cgpaddr_status(rx_buf, ip_addr);
+
+        if (state == CGPADDR_STATE_OK) {
+            // Success: A non-empty IP address was found and copied.
+            if (debug) printf("Assigned IP-Address: %s.\r\n", ip_addr);
+
+        } else if (state == CGPADDR_STATE_NOT_ACTIVE) {
+            // Failure: The context is defined but the IP field was empty ("").
+            if (debug) printf("[CGPADDR] PDP Context 1 defined, but NOT ACTIVE (IP is empty). Cannot proceed to data.\r\n");
+            return --rv;
+
+        } else { // CGPADDR_STATE_INVALID
+            // Failure: Parsing failed (malformed response content).
+            if (debug) printf("[CGPADDR] Failed to parse +CGPADDR: response content format.\r\n");
+            return --rv;
+        }
+    } else {
+        // Handle failures of the initial query (AT_TIMEOUT, AT_ERROR, etc.)
+        if (debug) printf("[CGPADDR] Failed to query IP-Address. Status code: %d.\r\n", resp);
+        return --rv;
+    }
+    systick_delay_ms(1000);     // Wait 1 second
+
+    // Attempt to terminate HTTP service first, just in case it's already active.
+    // Ignore the result of TERM, as we just want to ensure it's clean.
+    send_at("AT+HTTPTERM\r", 300, rx_buf, RX_BUF_SIZE, debug); 
+
+    // Initialize HTTP (start HTTP service and allocate modem resources)
+    resp = send_at("AT+HTTPINIT\r", 500, rx_buf, RX_BUF_SIZE, debug); 
+
+    if (resp == AT_OK) {
+        if (debug) printf("HTTP service successfully initialized.\r\n");
+    } else {
+        if (debug) printf("[HTTPINIT] Failed to initialize HTTP service. Status code: %d.\r\n", resp);
+        return --rv;
+    }
+
+    
+    // Set HTTP Content-Type parameter
+    // send_at("AT+HTTPPARA=\"CONTENT\",\"application/octet-stream\"\r", 500, rx_buf, RX_BUF_SIZE, debug);
+    const char *http_ctype_cmd = "AT+HTTPPARA=\"CONTENT\",\"application/octet-stream\"\r";
+    resp = send_at(http_ctype_cmd, 500, rx_buf, RX_BUF_SIZE, debug);
+
+    if (resp == AT_OK) {
+        if (debug) printf ("HTTP Content-Type successfully set.\r\n");
+    } else {
+        if (debug) printf ("[HTTPPARA] Failed to set HTTP Content-Type. Status Code: %d.\r\n", resp);
+        return --rv;
+    }
+
+    // Set HTTP URL parameter
+    char http_url_cmd[HTTP_URL_MAX_LEN]; 
+    int chars_written = snprintf(
+    http_url_cmd,
+    HTTP_URL_MAX_LEN,
+    "AT+HTTPPARA=\"URL\",\"%s\"\r",
+    url
+    );
+
+    // Check for truncation error
+    if (chars_written < 0 || chars_written >= HTTP_URL_MAX_LEN) {
+        if (debug) printf ("[HTTPPARA] The URL command string was too long or invalid.\r\n");
+        return --rv;
+    }
+
+    // Send the command
+    resp = send_at(http_url_cmd, 500, rx_buf, RX_BUF_SIZE, debug);
+
+    if (resp == AT_OK) {
+        if (debug) printf ("HTTP URL parameter successfully set.\r\n");
+    } else {
+        if (debug) printf("[HTTPPARA] Failed to set HTTP URL parameter. Status code: %d.\r\n", resp);
+        return --rv;
+    }
+    systick_delay_ms(1000);     // Wait 1 second
+
+    // -- Initialize GPS module -- 
     resp = send_at("AT+CGPS?\r", 500, rx_buf, RX_BUF_SIZE, debug); // Query GPS engine status
 
     if (resp == AT_INFO_CGPS) {
