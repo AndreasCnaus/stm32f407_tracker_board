@@ -142,3 +142,23 @@ _off_t _lseek_r(struct _reent *r, int file, _off_t ptr, int dir)
     (void)dir;
     return 0;
 }
+
+int _getpid(void) {
+    return 1;
+}
+
+int _kill(int pid, int sig) {
+    (void)pid;
+    (void)sig;
+    errno = EINVAL;
+    return -1;
+}
+
+void _exit(int status)
+{
+    (void)status;
+    while (1) {
+        // Optionally, trigger a system reset here:
+        // NVIC_SystemReset();
+    }
+}

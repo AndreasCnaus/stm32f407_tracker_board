@@ -68,15 +68,25 @@ int my_stdin_read_r(struct _reent *r, void *file_obj, char *buf, int len)
     return _read_r(r, ((FILE *)file_obj)->_file, buf, len);
 }
 
-void float_to_str(char *buf, float val) {
-    int sign = (val < 0) ? -1 : 1;
-    val = val * sign;                     // make val positive
-    int int_part = (int)val;
-    int frac_part = (int)((val - int_part) * 10000 + 0.5f);  // 4 decimal places, rounded
-
-    if (sign < 0) {
-        sprintf(buf, "-%d.%04d", int_part, frac_part);
-    } else {
-        sprintf(buf, "%d.%04d", int_part, frac_part);
+// Converts a float to string with fixed decimal precision
+char* float_to_str(char *buf, float val, int decimals)
+{
+    if (val < 0) {
+        *buf++ = '-';
+        val = -val;
     }
+
+    int int_part = (int)val;
+    float frac = val - int_part;
+
+    // scale and round fractional part
+    int mult = 1;
+    for (int i = 0; i < decimals; i++) mult *= 10;
+    int frac_part = (int)(frac * mult + 0.5f);
+
+    // write formatted string (integer + '.' + fraction)
+    sprintf(buf, "%d.%0*d", int_part, decimals, frac_part);
+
+    return buf;
 }
+

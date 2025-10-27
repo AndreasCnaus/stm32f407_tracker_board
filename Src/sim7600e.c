@@ -86,6 +86,7 @@ int sim7600e_write_command(uart_tx_char_t tx_func_nb, const char *cmd, size_t le
 char* sim7600e_read_full_response(uart_rx_char_t rx_func_nb, char *out_buf, size_t max_len, uint32_t timeout_ms);
 CregState_t parse_creg_status(const char *response_str);
 CgpsState_t parse_cgps_status(const char *response_str);
+CgpsState_t parse_cgpsinfo_state(char **response_str);
 CsqState_t parse_csq_status(const char *response_str, CsqResult_t *result);
 int sim7600e_eval_sq_result(CsqResult_t *result, uint8_t debug);
 CgattState_t parse_cgatt_status(const char *response_str);
@@ -250,14 +251,16 @@ CregState_t parse_creg_status(const char *response_str) {
         return CREG_STATE_INVALID;
     }
 
+
     // Locate the specific information line within the full response
-    const char *start_pos = strstr(response_str, "+CREG: ");
+     const char *info_prefix = "+CREG: ";
+    const char *start_pos = strstr(response_str, info_prefix);
     if (start_pos == NULL) {
         return CREG_STATE_INVALID;
     }
 
-    // Advance the pointer past the "+CREG: " prefix to the numbers
-    start_pos += strlen("+CREG: ");
+    // Advance the pointer past the prefix to the numbers
+    start_pos += strlen(info_prefix);
 
     // Attempt to read the two required integers <n>,<stat>
     int n = -1;
@@ -298,10 +301,13 @@ CgpsState_t parse_cgps_status(const char *response_str)
     }
 
     // Handle +CGPS: (GPS Engine Status)
-    const char *start_pos = strstr(response_str, "+CGPS: ");
+    const char *info_prefix = "+CGPS: ";
+    const char *start_pos = strstr(response_str, info_prefix);
 
+    
     if (start_pos != NULL) {
-        start_pos += strlen("+CGPS: ");
+        // Advance the pointer past the prefix to the numbers
+        start_pos += strlen(info_prefix);
         
         int mode = -1;
         int type = -1;
@@ -328,9 +334,20 @@ CgpsState_t parse_cgps_status(const char *response_str)
         return CGPS_STATE_INVALID; 
     }
 
+    // The response string contained do not contain +CGPS:
+    return CGPS_STATE_INVALID;
+}
+
+CgpsState_t parse_cgpsinfo_state(char **response_str)
+{
+
+     if (*response_str == NULL) {
+        return CGPS_STATE_INVALID;
+    }
+
     // Handle +CGPSINFO: (Positional Fix Status)
     const char *info_prefix = "+CGPSINFO: ";
-    start_pos = strstr(response_str, info_prefix);
+    char *start_pos  = strstr(*response_str, info_prefix);
 
     if (start_pos != NULL) {
         
@@ -340,16 +357,17 @@ CgpsState_t parse_cgps_status(const char *response_str)
         }
         
         // Find the "fix available" pattern
-        const char *latitude_start = start_pos + strlen(info_prefix);
+        char *latitude_start = start_pos + strlen(info_prefix);
         
         // Check the character content
         if (*latitude_start != ',') {
             // Fix is available.
+            *response_str = latitude_start;   // return the usefull palyoad to the caller
             return CGPS_STATE_FIX_AVAILABLE;
         }
     }
     
-    // The response string contained neither +CGPS: nor +CGPSINFO:
+    // The response string contained do not contain +CGPSINFO:
     return CGPS_STATE_INVALID;
 }
 
@@ -575,7 +593,7 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     // Send the software reset command (timeout can be short, e.g., 500ms, as it only needs to process the command)
     resp = send_at("AT+CFUN=1,1\r", 500, rx_buf, RX_BUF_SIZE, debug);
     if (resp != AT_OK) {
-        if (debug) printf("[CFUN] Error: failed to trigger SIM7600E reset. Continuing with caution.\r\n");
+        if (debug) printf("[CFUN] Failed to trigger SIM7600E reset. Satus code: %d\r\n", resp);
         return --rv;
     }
 
@@ -881,4 +899,51 @@ int sim7600e_init(const char *pin, const char *url, uint8_t debug)
     }
 
     return rv;   // 0 on success 
+}
+
+// Get GPS info and save it into the given buffer 
+int sim7600e_get_gps_fix(char **buf, size_t len, uint32_t delay_ms, uint32_t timeout_ms, uint8_t debug)
+{
+    // Input parameter check
+    if (*buf == NULL || len == 0) {
+        return -1; 
+    }
+
+    // Clear the buffer
+    *buf[0] = '\0'; 
+
+    AtResponseStatus_t resp;
+    uint32_t start_time = system_get_tick_ms();
+
+    // Loop as long as the time elapsed is smaller than given timeout 
+    while ((system_get_tick_ms() - start_time) < timeout_ms) {
+
+        // Send AT command to get GPS info 
+        resp = send_at("AT+CGPSINFO\r", 1000, *buf, len, debug); 
+
+        if (resp == AT_INFO_CGPSINFO) {
+
+            // Parse the GPS info
+            CgpsState_t state = parse_cgpsinfo_state(buf);
+
+            if (state == CGPS_STATE_FIX_AVAILABLE) {
+                return 0;   // Success, fix was found 
+            } else if (state == CGPS_STATE_NO_FIX) {
+                if (debug) printf("No GPS fix available, continue trying...\r\n");
+                systick_delay_ms(delay_ms);  // wait delay_ms before trying again 
+                continue;
+            } else {
+                // Handle error like INVALIDE_STATE etc.
+                if (debug) printf("Failed to retrieve GPS-Info. Status code: %d.\r\n", resp);
+                return -2; 
+            }
+        } else {
+            // Handle failures of the initial query (AT_TIMEOUT, AT_ERROR, etc.)
+            if (debug) printf("Failed to query GPS info. Status code: %d", resp);
+            return -1;
+        }
+       
+    }
+
+    return -3; // Error doe to timeout
 }

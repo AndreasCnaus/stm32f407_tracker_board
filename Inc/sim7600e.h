@@ -136,5 +136,6 @@ typedef enum {
 } CgpaddrState_t;
 
 int sim7600e_init(const char *pin, const char *url, uint8_t debug);
+int sim7600e_get_gps_fix(char **buf, size_t len, uint32_t delay_ms, uint32_t timeout_ms, uint8_t debug);
 
 #endif  // SIM7600E_H_
